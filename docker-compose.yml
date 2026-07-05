@@ -1,0 +1,60 @@
+services:
+  reservation-expiry-service:
+    build:
+      context: ./applications/app-service/build/libs
+      dockerfile: ../../../deployment/Dockerfile
+    environment:
+      ENV: local
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      TICKETS_TABLE_NAME: tickets
+      ORDERS_TABLE_NAME: orders
+      EXPIRY_QUEUE_URL: http://localstack:4566/000000000000/reservation-expiry
+      EXPIRY_QUEUE_NAME: reservation-expiry
+    depends_on:
+      dynamodb-init:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    networks:
+      - reservation-expiry-net
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:2.5.4
+    command: [ "-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory" ]
+    ports:
+      - "8000:8000"
+    networks:
+      - reservation-expiry-net
+
+  dynamodb-init:
+    image: amazon/aws-cli:2.17.62
+    depends_on:
+      - dynamodb-local
+    entrypoint: [ "/bin/sh", "/init/init-dynamodb.sh" ]
+    volumes:
+      - ./deployment/local/init-dynamodb.sh:/init/init-dynamodb.sh:ro
+    networks:
+      - reservation-expiry-net
+
+  localstack:
+    image: localstack/localstack:3.8
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+    volumes:
+      - ./deployment/local/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:4566/_localstack/health" ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    networks:
+      - reservation-expiry-net
+
+networks:
+  reservation-expiry-net:
+    driver: bridge

@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: "ReservationExpiryService"
+  devtools:
+    add-properties: false
+  profiles:
+    active: ${ENV:local}
+aws:
+  region: ${AWS_REGION}
+adapter:
+  dynamodb:
+    tickets-table-name: ${TICKETS_TABLE_NAME}
+    orders-table-name: ${ORDERS_TABLE_NAME}
+entrypoint:
+  sqs:
+    region: ${AWS_REGION}
+    queueUrl: ${EXPIRY_QUEUE_URL}
+    waitTimeSeconds: 20
+    maxNumberOfMessages: 10
+    visibilityTimeoutSeconds: 10
+    numberOfThreads: 1
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+aws:
+  dynamodb:
+    endpoint: ${AWS_DYNAMODB_ENDPOINT:http://dynamodb-local:8000}
+entrypoint:
+  sqs:
+    endpoint: ${AWS_SQS_ENDPOINT:http://localstack:4566}
