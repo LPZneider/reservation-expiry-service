@@ -6,15 +6,15 @@ spring:
   profiles:
     active: ${ENV:local}
 aws:
-  region: ${AWS_REGION}
+  region: ${AWS_REGION:us-east-1}
 adapter:
   dynamodb:
-    tickets-table-name: ${TICKETS_TABLE_NAME}
-    orders-table-name: ${ORDERS_TABLE_NAME}
+    tickets-table-name: ${TICKETS_TABLE_NAME:tickets}
+    orders-table-name: ${ORDERS_TABLE_NAME:orders}
 entrypoint:
   sqs:
-    region: ${AWS_REGION}
-    queueUrl: ${EXPIRY_QUEUE_URL}
+    region: ${AWS_REGION:us-east-1}
+    queueUrl: ${EXPIRY_QUEUE_URL:http://localstack:4566/000000000000/reservation-expiry}
     waitTimeSeconds: 20
     maxNumberOfMessages: 10
     visibilityTimeoutSeconds: 10
