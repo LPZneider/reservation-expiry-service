@@ -1,8 +1,8 @@
 services:
   reservation-expiry-service:
     build:
-      context: ./applications/app-service/build/libs
-      dockerfile: ../../../deployment/Dockerfile
+      context: .
+      dockerfile: deployment/Dockerfile
     environment:
       ENV: local
       AWS_REGION: us-east-1
