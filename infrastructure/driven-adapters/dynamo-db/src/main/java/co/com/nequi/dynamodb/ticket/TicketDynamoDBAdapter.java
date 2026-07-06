@@ -1,6 +1,5 @@
 package co.com.nequi.dynamodb.ticket;
 
-import co.com.nequi.model.ticket.Ticket;
 import co.com.nequi.model.ticket.TicketReleaseResult;
 import co.com.nequi.model.ticket.TicketStatus;
 import co.com.nequi.model.ticket.gateways.TicketRepository;
@@ -9,18 +8,21 @@ import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Mono;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
-import software.amazon.awssdk.services.dynamodb.model.ReturnValue;
-import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.Delete;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
+import software.amazon.awssdk.services.dynamodb.model.Update;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
- * Ticket items live in TICKETS_TABLE_NAME: pk=eventId, sk=ticketId (same single-table
- * schema written by ticket-reservation-service). The RESERVED -> AVAILABLE release is a
- * single conditional UpdateItem per ticket; ticket-purchase-service races for the same
- * item with its own ConditionExpression, so exactly one of the two writers wins per
- * ticket via optimistic concurrency — no explicit locking.
+ * Release is a single TransactWriteItems:
+ *   - N Deletes: each ticket RESERVED -> deleted (condition: status=RESERVED AND orderId=:orderId)
+ *   - 1 Update on Event: availableCount += quantity
+ * Either everything commits or nothing does.
  */
 @Repository
 public class TicketDynamoDBAdapter implements TicketRepository {
@@ -35,36 +37,45 @@ public class TicketDynamoDBAdapter implements TicketRepository {
     }
 
     @Override
-    public Mono<TicketReleaseResult> conditionalRelease(String eventId, String ticketId, String orderId) {
-        UpdateItemRequest request = UpdateItemRequest.builder()
-                .tableName(ticketsTableName)
-                .key(Map.of(
-                        "pk", AttributeValue.fromS(eventId),
-                        "sk", AttributeValue.fromS(ticketId)))
-                .updateExpression("SET #status = :available REMOVE orderId, reservationExpiresAt")
-                .conditionExpression("#status = :reserved AND orderId = :orderId")
-                .expressionAttributeNames(Map.of("#status", "status"))
-                .expressionAttributeValues(Map.of(
-                        ":available", AttributeValue.fromS(TicketStatus.AVAILABLE.name()),
-                        ":reserved", AttributeValue.fromS(TicketStatus.RESERVED.name()),
-                        ":orderId", AttributeValue.fromS(orderId)))
-                .returnValues(ReturnValue.ALL_NEW)
-                .build();
+    public Mono<TicketReleaseResult> releaseAndRestoreAvailability(String eventId, List<String> ticketIds, String orderId) {
+        int quantity = ticketIds.size();
+        List<TransactWriteItem> items = new ArrayList<>();
 
-        return Mono.fromFuture(client.updateItem(request))
-                .<TicketReleaseResult>map(response -> new TicketReleaseResult.Released(
-                        toTicket(response.attributes(), eventId, ticketId)))
-                .onErrorResume(ConditionalCheckFailedException.class,
-                        ex -> Mono.just(new TicketReleaseResult.LostRace(ticketId,
-                                "ticket is no longer RESERVED for this order (already sold or reassigned)")));
-    }
+        // 1. Delete each RESERVED ticket (condition: status=RESERVED AND orderId=:orderId)
+        for (String ticketId : ticketIds) {
+            items.add(TransactWriteItem.builder()
+                    .delete(Delete.builder()
+                            .tableName(ticketsTableName)
+                            .key(Map.of(
+                                    "pk", AttributeValue.fromS(eventId),
+                                    "sk", AttributeValue.fromS(ticketId)))
+                            .conditionExpression("#status = :reserved AND orderId = :orderId")
+                            .expressionAttributeNames(Map.of("#status", "status"))
+                            .expressionAttributeValues(Map.of(
+                                    ":reserved", AttributeValue.fromS(TicketStatus.RESERVED.name()),
+                                    ":orderId",  AttributeValue.fromS(orderId)))
+                            .build())
+                    .build());
+        }
 
-    private static Ticket toTicket(Map<String, AttributeValue> attributes, String eventId, String ticketId) {
-        return Ticket.builder()
-                .ticketId(ticketId)
-                .eventId(eventId)
-                .status(TicketStatus.valueOf(attributes.get("status").s()))
-                .version(attributes.containsKey("version") ? Long.parseLong(attributes.get("version").n()) : 0L)
-                .build();
+        // 2. Restore availableCount on Event
+        items.add(TransactWriteItem.builder()
+                .update(Update.builder()
+                        .tableName(ticketsTableName)
+                        .key(Map.of(
+                                "pk", AttributeValue.fromS(eventId),
+                                "sk", AttributeValue.fromS("METADATA")))
+                        .updateExpression("SET availableCount = availableCount + :qty")
+                        .expressionAttributeValues(Map.of(
+                                ":qty", AttributeValue.fromN(String.valueOf(quantity))))
+                        .build())
+                .build());
+
+        return Mono.fromFuture(client.transactWriteItems(
+                        TransactWriteItemsRequest.builder().transactItems(items).build()))
+                .<TicketReleaseResult>map(r -> new TicketReleaseResult.Released())
+                .onErrorResume(TransactionCanceledException.class,
+                        ex -> Mono.just(new TicketReleaseResult.LostRace(
+                                "tickets for order " + orderId + " already resolved (sold or reassigned)")));
     }
 }

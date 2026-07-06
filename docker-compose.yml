@@ -1,8 +1,8 @@
 services:
   reservation-expiry-service:
     build:
-      context: ./applications/app-service/build/libs
-      dockerfile: ../../../deployment/Dockerfile
+      context: .
+      dockerfile: deployment/Dockerfile
     environment:
       ENV: local
       AWS_REGION: us-east-1
@@ -33,6 +33,9 @@ services:
     depends_on:
       - dynamodb-local
     entrypoint: [ "/bin/sh", "/init/init-dynamodb.sh" ]
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
     volumes:
       - ./deployment/local/init-dynamodb.sh:/init/init-dynamodb.sh:ro
     networks:

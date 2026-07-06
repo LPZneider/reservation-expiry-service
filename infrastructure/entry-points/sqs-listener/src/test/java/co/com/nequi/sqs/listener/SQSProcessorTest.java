@@ -25,10 +25,13 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class SQSProcessorTest {
 
-    @Mock
-    private ExpireReservationUseCase expireReservationUseCase;
+    @Mock private ExpireReservationUseCase expireReservationUseCase;
 
     private SQSProcessor processor;
+
+    private static final String VALID_BODY = """
+            {"orderId":"order-1","ticketIds":["order-1-1","order-1-2"]}
+            """;
 
     @BeforeEach
     void setUp() {
@@ -39,37 +42,42 @@ class SQSProcessorTest {
         return Message.builder().body(body).build();
     }
 
-    private static final String VALID_BODY = """
-            {"orderId":"order-1","ticketIds":["t1","t2"]}
-            """;
-
     @Test
     void shouldCompleteWhenReservationExpired() {
-        Order order = Order.builder().orderId("order-1").eventId("event-1").ticketIds(List.of("t1", "t2"))
-                .userId("user-1").orderStatus(OrderStatus.EXPIRED).createdAt(Instant.now()).build();
+        Order order = Order.builder().orderId("order-1").eventId("event-1")
+                .ticketIds(List.of("order-1-1", "order-1-2")).userId("user-1")
+                .orderStatus(OrderStatus.EXPIRED).createdAt(Instant.now()).build();
         when(expireReservationUseCase.expire(anyString(), anyList()))
                 .thenReturn(Mono.just(new ReservationExpirationResult.Expired(order)));
 
-        StepVerifier.create(processor.apply(message(VALID_BODY)))
-                .verifyComplete();
+        StepVerifier.create(processor.apply(message(VALID_BODY))).verifyComplete();
     }
 
     @Test
-    void shouldCompleteWhenLostRace() {
+    void shouldCompleteWhenLostRaceWithReason() {
         when(expireReservationUseCase.expire(anyString(), anyList()))
-                .thenReturn(Mono.just(new ReservationExpirationResult.LostRace(List.of("t2"))));
+                .thenReturn(Mono.just(new ReservationExpirationResult.LostRace(
+                        "tickets for order order-1 already resolved")));
 
-        StepVerifier.create(processor.apply(message(VALID_BODY)))
-                .verifyComplete();
+        StepVerifier.create(processor.apply(message(VALID_BODY))).verifyComplete();
     }
 
     @Test
-    void shouldCompleteWhenAlreadyProcessed() {
+    void shouldCompleteWhenAlreadyProcessedConfirmed() {
         when(expireReservationUseCase.expire(anyString(), anyList()))
-                .thenReturn(Mono.just(new ReservationExpirationResult.AlreadyProcessed("order-1", OrderStatus.CONFIRMED)));
+                .thenReturn(Mono.just(new ReservationExpirationResult.AlreadyProcessed(
+                        "order-1", OrderStatus.CONFIRMED)));
 
-        StepVerifier.create(processor.apply(message(VALID_BODY)))
-                .verifyComplete();
+        StepVerifier.create(processor.apply(message(VALID_BODY))).verifyComplete();
+    }
+
+    @Test
+    void shouldCompleteWhenAlreadyProcessedRejected() {
+        when(expireReservationUseCase.expire(anyString(), anyList()))
+                .thenReturn(Mono.just(new ReservationExpirationResult.AlreadyProcessed(
+                        "order-1", OrderStatus.REJECTED)));
+
+        StepVerifier.create(processor.apply(message(VALID_BODY))).verifyComplete();
     }
 
     @Test
