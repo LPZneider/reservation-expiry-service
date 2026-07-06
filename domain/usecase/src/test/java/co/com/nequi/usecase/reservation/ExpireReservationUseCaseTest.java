@@ -5,13 +5,12 @@ import co.com.nequi.model.order.Order;
 import co.com.nequi.model.order.OrderStatus;
 import co.com.nequi.model.order.gateways.OrderRepository;
 import co.com.nequi.model.reservation.ReservationExpirationResult;
-import co.com.nequi.model.ticket.Ticket;
 import co.com.nequi.model.ticket.TicketReleaseResult;
-import co.com.nequi.model.ticket.TicketStatus;
 import co.com.nequi.model.ticket.gateways.TicketRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import reactor.core.publisher.Mono;
@@ -22,8 +21,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -31,69 +30,75 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class ExpireReservationUseCaseTest {
 
-    @Mock
-    private TicketRepository ticketRepository;
-    @Mock
-    private OrderRepository orderRepository;
+    @Mock private TicketRepository ticketRepository;
+    @Mock private OrderRepository orderRepository;
 
     private ExpireReservationUseCase useCase;
 
-    private static final String ORDER_ID = "order-1";
-    private static final String EVENT_ID = "event-1";
-    private static final List<String> TICKET_IDS = List.of("t1", "t2");
+    private static final String ORDER_ID  = "order-1";
+    private static final String EVENT_ID  = "event-1";
+    private static final List<String> TICKET_IDS = List.of("order-1-1", "order-1-2");
 
     @BeforeEach
     void setUp() {
         useCase = new ExpireReservationUseCase(ticketRepository, orderRepository);
     }
 
-    private static Order pendingOrder() {
-        return orderWithStatus(OrderStatus.PENDING_CONFIRMATION);
-    }
-
     private static Order orderWithStatus(OrderStatus status) {
-        return Order.builder()
-                .orderId(ORDER_ID)
-                .eventId(EVENT_ID)
-                .ticketIds(TICKET_IDS)
-                .userId("user-1")
-                .orderStatus(status)
-                .createdAt(Instant.now())
-                .build();
+        return Order.builder().orderId(ORDER_ID).eventId(EVENT_ID).ticketIds(TICKET_IDS)
+                .userId("user-1").orderStatus(status).createdAt(Instant.now()).build();
     }
 
     @Test
-    void shouldExpireOrderWhenAllTicketsAreReleased() {
-        when(orderRepository.findLatestByOrderId(ORDER_ID)).thenReturn(Mono.just(pendingOrder()));
-        when(ticketRepository.conditionalRelease(eq(EVENT_ID), anyString(), eq(ORDER_ID)))
-                .thenAnswer(invocation -> Mono.just(new TicketReleaseResult.Released(
-                        Ticket.builder().ticketId(invocation.getArgument(1)).eventId(EVENT_ID)
-                                .status(TicketStatus.AVAILABLE).build())));
-        when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
+    void shouldExpireOrderAndRestoreAvailabilityWhenTransactionSucceeds() {
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.PENDING_CONFIRMATION)));
+        when(ticketRepository.releaseAndRestoreAvailability(anyString(), anyList(), anyString()))
+                .thenReturn(Mono.just(new TicketReleaseResult.Released()));
+        when(orderRepository.save(any(Order.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))
                 .assertNext(result -> {
                     assertThat(result).isInstanceOf(ReservationExpirationResult.Expired.class);
-                    Order order = ((ReservationExpirationResult.Expired) result).order();
-                    assertThat(order.getOrderStatus()).isEqualTo(OrderStatus.EXPIRED);
-                    assertThat(order.getOrderId()).isEqualTo(ORDER_ID);
+                    Order saved = ((ReservationExpirationResult.Expired) result).order();
+                    assertThat(saved.getOrderStatus()).isEqualTo(OrderStatus.EXPIRED);
+                    assertThat(saved.getOrderId()).isEqualTo(ORDER_ID);
                 })
                 .verifyComplete();
     }
 
     @Test
-    void shouldReturnLostRaceWithoutSavingWhenAnyTicketFailsCondition() {
-        when(orderRepository.findLatestByOrderId(ORDER_ID)).thenReturn(Mono.just(pendingOrder()));
-        when(ticketRepository.conditionalRelease(EVENT_ID, "t1", ORDER_ID))
-                .thenReturn(Mono.just(new TicketReleaseResult.Released(
-                        Ticket.builder().ticketId("t1").eventId(EVENT_ID).status(TicketStatus.AVAILABLE).build())));
-        when(ticketRepository.conditionalRelease(EVENT_ID, "t2", ORDER_ID))
-                .thenReturn(Mono.just(new TicketReleaseResult.LostRace("t2", "already sold by ticket-purchase-service")));
+    void shouldPassCorrectArgumentsToReleaseAndRestoreAvailability() {
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.PENDING_CONFIRMATION)));
+        when(ticketRepository.releaseAndRestoreAvailability(anyString(), anyList(), anyString()))
+                .thenReturn(Mono.just(new TicketReleaseResult.Released()));
+        when(orderRepository.save(any(Order.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+        useCase.expire(ORDER_ID, TICKET_IDS).block();
+
+        ArgumentCaptor<String> eventCaptor   = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<List>   ticketCaptor  = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<String> orderCaptor   = ArgumentCaptor.forClass(String.class);
+        verify(ticketRepository).releaseAndRestoreAvailability(
+                eventCaptor.capture(), ticketCaptor.capture(), orderCaptor.capture());
+        assertThat(eventCaptor.getValue()).isEqualTo(EVENT_ID);
+        assertThat(ticketCaptor.getValue()).isEqualTo(TICKET_IDS);
+        assertThat(orderCaptor.getValue()).isEqualTo(ORDER_ID);
+    }
+
+    @Test
+    void shouldReturnLostRaceWithoutSavingWhenTransactionCancelled() {
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.PENDING_CONFIRMATION)));
+        when(ticketRepository.releaseAndRestoreAvailability(anyString(), anyList(), anyString()))
+                .thenReturn(Mono.just(new TicketReleaseResult.LostRace("already sold")));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))
                 .assertNext(result -> {
                     assertThat(result).isInstanceOf(ReservationExpirationResult.LostRace.class);
-                    assertThat(((ReservationExpirationResult.LostRace) result).ticketIds()).containsExactly("t2");
+                    assertThat(((ReservationExpirationResult.LostRace) result).reason())
+                            .isEqualTo("already sold");
                 })
                 .verifyComplete();
 
@@ -101,9 +106,9 @@ class ExpireReservationUseCaseTest {
     }
 
     @Test
-    void shouldReturnAlreadyProcessedAndSkipTicketUpdatesWhenOrderIsConfirmed() {
-        Order existing = orderWithStatus(OrderStatus.CONFIRMED);
-        when(orderRepository.findLatestByOrderId(ORDER_ID)).thenReturn(Mono.just(existing));
+    void shouldReturnAlreadyProcessedAndSkipReleaseWhenOrderIsConfirmed() {
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.CONFIRMED)));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))
                 .assertNext(result -> {
@@ -113,36 +118,40 @@ class ExpireReservationUseCaseTest {
                 })
                 .verifyComplete();
 
-        verify(ticketRepository, never()).conditionalRelease(anyString(), anyString(), anyString());
+        verify(ticketRepository, never()).releaseAndRestoreAvailability(anyString(), anyList(), anyString());
         verify(orderRepository, never()).save(any());
     }
 
     @Test
-    void shouldReturnAlreadyProcessedWhenOrderIsRejected() {
-        Order existing = orderWithStatus(OrderStatus.REJECTED);
-        when(orderRepository.findLatestByOrderId(ORDER_ID)).thenReturn(Mono.just(existing));
+    void shouldExpireTicketsWhenOrderIsRejected() {
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.REJECTED)));
+        when(ticketRepository.releaseAndRestoreAvailability(anyString(), anyList(), anyString()))
+                .thenReturn(Mono.just(new TicketReleaseResult.Released()));
+        when(orderRepository.save(any(Order.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))
-                .assertNext(result -> assertThat(result).isInstanceOf(ReservationExpirationResult.AlreadyProcessed.class))
+                .assertNext(result -> {
+                    assertThat(result).isInstanceOf(ReservationExpirationResult.Expired.class);
+                    Order saved = ((ReservationExpirationResult.Expired) result).order();
+                    assertThat(saved.getOrderStatus()).isEqualTo(OrderStatus.EXPIRED);
+                })
                 .verifyComplete();
 
-        verify(ticketRepository, never()).conditionalRelease(anyString(), anyString(), anyString());
+        verify(ticketRepository).releaseAndRestoreAvailability(anyString(), anyList(), anyString());
     }
 
     @Test
     void shouldReturnAlreadyProcessedWhenOrderIsAlreadyExpired() {
-        Order existing = orderWithStatus(OrderStatus.EXPIRED);
-        when(orderRepository.findLatestByOrderId(ORDER_ID)).thenReturn(Mono.just(existing));
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.EXPIRED)));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))
-                .assertNext(result -> {
-                    assertThat(result).isInstanceOf(ReservationExpirationResult.AlreadyProcessed.class);
-                    assertThat(((ReservationExpirationResult.AlreadyProcessed) result).orderStatus())
-                            .isEqualTo(OrderStatus.EXPIRED);
-                })
+                .assertNext(result -> assertThat(result)
+                        .isInstanceOf(ReservationExpirationResult.AlreadyProcessed.class))
                 .verifyComplete();
 
-        verify(ticketRepository, never()).conditionalRelease(anyString(), anyString(), anyString());
+        verify(ticketRepository, never()).releaseAndRestoreAvailability(anyString(), anyList(), anyString());
         verify(orderRepository, never()).save(any());
     }
 
@@ -154,13 +163,14 @@ class ExpireReservationUseCaseTest {
                 .expectError(OrderNotFoundException.class)
                 .verify();
 
-        verify(ticketRepository, never()).conditionalRelease(anyString(), anyString(), anyString());
+        verify(ticketRepository, never()).releaseAndRestoreAvailability(anyString(), anyList(), anyString());
     }
 
     @Test
-    void shouldPropagateTransientErrorWithoutConvertingToLostRace() {
-        when(orderRepository.findLatestByOrderId(ORDER_ID)).thenReturn(Mono.just(pendingOrder()));
-        when(ticketRepository.conditionalRelease(any(), any(), any()))
+    void shouldPropagateTransientErrorFromRepository() {
+        when(orderRepository.findLatestByOrderId(ORDER_ID))
+                .thenReturn(Mono.just(orderWithStatus(OrderStatus.PENDING_CONFIRMATION)));
+        when(ticketRepository.releaseAndRestoreAvailability(anyString(), anyList(), anyString()))
                 .thenReturn(Mono.error(new RuntimeException("DynamoDB throttled")));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))

@@ -8,7 +8,6 @@ import co.com.nequi.model.reservation.ReservationExpirationResult;
 import co.com.nequi.model.ticket.TicketReleaseResult;
 import co.com.nequi.model.ticket.gateways.TicketRepository;
 import lombok.RequiredArgsConstructor;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Instant;
@@ -31,27 +30,20 @@ public class ExpireReservationUseCase {
 
     private static boolean isAlreadyResolved(Order order) {
         return order.getOrderStatus() == OrderStatus.CONFIRMED
-                || order.getOrderStatus() == OrderStatus.REJECTED
                 || order.getOrderStatus() == OrderStatus.EXPIRED;
     }
 
     private Mono<ReservationExpirationResult> processExpiration(Order order, List<String> ticketIds) {
-        return Flux.fromIterable(ticketIds)
-                .flatMap(ticketId -> ticketRepository.conditionalRelease(order.getEventId(), ticketId, order.getOrderId()))
-                .collectList()
-                .flatMap(results -> resolveExpiration(order, results));
+        return ticketRepository.releaseAndRestoreAvailability(order.getEventId(), ticketIds, order.getOrderId())
+                .flatMap(result -> switch (result) {
+                    case TicketReleaseResult.LostRace lr ->
+                            Mono.just((ReservationExpirationResult) new ReservationExpirationResult.LostRace(lr.reason()));
+                    case TicketReleaseResult.Released ignored ->
+                            saveExpiredOrder(order);
+                });
     }
 
-    private Mono<ReservationExpirationResult> resolveExpiration(Order order, List<TicketReleaseResult> results) {
-        List<String> lostTicketIds = results.stream()
-                .filter(TicketReleaseResult.LostRace.class::isInstance)
-                .map(result -> ((TicketReleaseResult.LostRace) result).ticketId())
-                .toList();
-
-        if (!lostTicketIds.isEmpty()) {
-            return Mono.just(new ReservationExpirationResult.LostRace(lostTicketIds));
-        }
-
+    private Mono<ReservationExpirationResult> saveExpiredOrder(Order order) {
         Order expiredOrder = Order.builder()
                 .orderId(order.getOrderId())
                 .eventId(order.getEventId())
@@ -60,8 +52,7 @@ public class ExpireReservationUseCase {
                 .orderStatus(OrderStatus.EXPIRED)
                 .createdAt(Instant.now())
                 .build();
-
         return orderRepository.save(expiredOrder)
-                .map(savedOrder -> (ReservationExpirationResult) new ReservationExpirationResult.Expired(savedOrder));
+                .map(saved -> (ReservationExpirationResult) new ReservationExpirationResult.Expired(saved));
     }
 }
