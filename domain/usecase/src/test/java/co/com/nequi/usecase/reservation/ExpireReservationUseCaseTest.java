@@ -123,16 +123,22 @@ class ExpireReservationUseCaseTest {
     }
 
     @Test
-    void shouldReturnAlreadyProcessedWhenOrderIsRejected() {
+    void shouldExpireTicketsWhenOrderIsRejected() {
         when(orderRepository.findLatestByOrderId(ORDER_ID))
                 .thenReturn(Mono.just(orderWithStatus(OrderStatus.REJECTED)));
+        when(ticketRepository.releaseAndRestoreAvailability(anyString(), anyList(), anyString()))
+                .thenReturn(Mono.just(new TicketReleaseResult.Released()));
+        when(orderRepository.save(any(Order.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
         StepVerifier.create(useCase.expire(ORDER_ID, TICKET_IDS))
-                .assertNext(result -> assertThat(result)
-                        .isInstanceOf(ReservationExpirationResult.AlreadyProcessed.class))
+                .assertNext(result -> {
+                    assertThat(result).isInstanceOf(ReservationExpirationResult.Expired.class);
+                    Order saved = ((ReservationExpirationResult.Expired) result).order();
+                    assertThat(saved.getOrderStatus()).isEqualTo(OrderStatus.EXPIRED);
+                })
                 .verifyComplete();
 
-        verify(ticketRepository, never()).releaseAndRestoreAvailability(anyString(), anyList(), anyString());
+        verify(ticketRepository).releaseAndRestoreAvailability(anyString(), anyList(), anyString());
     }
 
     @Test

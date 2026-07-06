@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Mono;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
@@ -19,7 +20,7 @@ import java.util.Map;
 
 /**
  * Release is a single TransactWriteItems:
- *   - N Updates: each ticket RESERVED -> AVAILABLE (condition: status=RESERVED AND orderId=:orderId)
+ *   - N Deletes: each ticket RESERVED -> deleted (condition: status=RESERVED AND orderId=:orderId)
  *   - 1 Update on Event: availableCount += quantity
  * Either everything commits or nothing does.
  */
@@ -40,21 +41,19 @@ public class TicketDynamoDBAdapter implements TicketRepository {
         int quantity = ticketIds.size();
         List<TransactWriteItem> items = new ArrayList<>();
 
-        // 1. Release each ticket RESERVED -> AVAILABLE
+        // 1. Delete each RESERVED ticket (condition: status=RESERVED AND orderId=:orderId)
         for (String ticketId : ticketIds) {
             items.add(TransactWriteItem.builder()
-                    .update(Update.builder()
+                    .delete(Delete.builder()
                             .tableName(ticketsTableName)
                             .key(Map.of(
                                     "pk", AttributeValue.fromS(eventId),
                                     "sk", AttributeValue.fromS(ticketId)))
-                            .updateExpression("SET #status = :available REMOVE orderId, reservationExpiresAt")
                             .conditionExpression("#status = :reserved AND orderId = :orderId")
                             .expressionAttributeNames(Map.of("#status", "status"))
                             .expressionAttributeValues(Map.of(
-                                    ":available", AttributeValue.fromS(TicketStatus.AVAILABLE.name()),
-                                    ":reserved",  AttributeValue.fromS(TicketStatus.RESERVED.name()),
-                                    ":orderId",   AttributeValue.fromS(orderId)))
+                                    ":reserved", AttributeValue.fromS(TicketStatus.RESERVED.name()),
+                                    ":orderId",  AttributeValue.fromS(orderId)))
                             .build())
                     .build());
         }

@@ -30,7 +30,6 @@ public class ExpireReservationUseCase {
 
     private static boolean isAlreadyResolved(Order order) {
         return order.getOrderStatus() == OrderStatus.CONFIRMED
-                || order.getOrderStatus() == OrderStatus.REJECTED
                 || order.getOrderStatus() == OrderStatus.EXPIRED;
     }
 

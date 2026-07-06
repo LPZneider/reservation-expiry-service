@@ -49,7 +49,7 @@ class TicketDynamoDBAdapterTest {
     }
 
     @Test
-    void shouldBuildTransactionWithNTicketUpdatesPlusOneEventUpdate() {
+    void shouldBuildTransactionWithNTicketDeletesPlusOneEventUpdate() {
         when(client.transactWriteItems(any(TransactWriteItemsRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(TransactWriteItemsResponse.builder().build()));
 
@@ -59,19 +59,18 @@ class TicketDynamoDBAdapterTest {
         verify(client).transactWriteItems(captor.capture());
 
         var items = captor.getValue().transactItems();
-        // N ticket Updates + 1 Event Update
         assertThat(items).hasSize(TICKET_IDS.size() + 1);
 
-        // First N items: ticket releases
+        // First N items: ticket deletes
         for (int i = 0; i < TICKET_IDS.size(); i++) {
-            var update = items.get(i).update();
-            assertThat(update).isNotNull();
-            assertThat(update.key().get("pk").s()).isEqualTo(EVENT_ID);
-            assertThat(update.key().get("sk").s()).isEqualTo(TICKET_IDS.get(i));
-            assertThat(update.conditionExpression()).contains(":reserved");
-            assertThat(update.expressionAttributeValues().get(":available").s())
-                    .isEqualTo(TicketStatus.AVAILABLE.name());
-            assertThat(update.expressionAttributeValues().get(":orderId").s()).isEqualTo(ORDER_ID);
+            var delete = items.get(i).delete();
+            assertThat(delete).isNotNull();
+            assertThat(delete.key().get("pk").s()).isEqualTo(EVENT_ID);
+            assertThat(delete.key().get("sk").s()).isEqualTo(TICKET_IDS.get(i));
+            assertThat(delete.conditionExpression()).contains(":reserved");
+            assertThat(delete.expressionAttributeValues().get(":reserved").s())
+                    .isEqualTo(TicketStatus.RESERVED.name());
+            assertThat(delete.expressionAttributeValues().get(":orderId").s()).isEqualTo(ORDER_ID);
         }
 
         // Last item: Event availableCount restore
