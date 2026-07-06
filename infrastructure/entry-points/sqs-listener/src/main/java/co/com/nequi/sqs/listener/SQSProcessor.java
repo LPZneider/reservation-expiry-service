@@ -47,7 +47,7 @@ public class SQSProcessor implements Function<Message, Mono<Void>> {
                     log.info("[EXPIRY] Reservation expired | orderId={}", expired.order().getOrderId());
             case ReservationExpirationResult.LostRace lostRace ->
                     log.info("[EXPIRY] Lost race against ticket-purchase-service, order already sold | "
-                            + "orderId={}, ticketIds={}", orderId, lostRace.ticketIds());
+                            + "orderId={}, reason={}", orderId, lostRace.reason());
             case ReservationExpirationResult.AlreadyProcessed alreadyProcessed ->
                     log.info("[EXPIRY] Order already processed, skipping | orderId={}, status={}",
                             orderId, alreadyProcessed.orderStatus());

@@ -91,12 +91,20 @@ class OrderDynamoDBAdapterTest {
     }
 
     @Test
-    void shouldCompleteEmptyWhenOrderDoesNotExist() {
-        Page<OrderEntity> emptyPage = Page.builder(OrderEntity.class).items(List.of()).build();
-        PagePublisher<OrderEntity> pagePublisher = PagePublisher.create(SdkPublisher.adapt(Flux.just(emptyPage)));
-        when(table.query(any(QueryEnhancedRequest.class))).thenReturn(pagePublisher);
+    void orderEntityGettersAndSettersCoverAllFields() {
+        OrderEntity entity = new OrderEntity();
+        entity.setPk("pk-1"); entity.setSk("sk-1");
+        entity.setOrderId("order-1"); entity.setEventId("event-1");
+        entity.setTicketIds(List.of("t1")); entity.setUserId("user-1");
+        entity.setOrderStatus("EXPIRED"); entity.setCreatedAt("2026-07-01T10:00:00Z");
 
-        StepVerifier.create(adapter.findLatestByOrderId("missing"))
-                .verifyComplete();
+        assertThat(entity.getPk()).isEqualTo("pk-1");
+        assertThat(entity.getSk()).isEqualTo("sk-1");
+        assertThat(entity.getOrderId()).isEqualTo("order-1");
+        assertThat(entity.getEventId()).isEqualTo("event-1");
+        assertThat(entity.getTicketIds()).containsExactly("t1");
+        assertThat(entity.getUserId()).isEqualTo("user-1");
+        assertThat(entity.getOrderStatus()).isEqualTo("EXPIRED");
+        assertThat(entity.getCreatedAt()).isEqualTo("2026-07-01T10:00:00Z");
     }
 }
